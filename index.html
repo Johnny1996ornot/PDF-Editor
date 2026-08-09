@@ -2,21 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>PDF Image Signer</title>
+  <title>PDF Editor & Signer</title>
   <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 24px; background: #f8f9fa; color: #333; }
-    .toolbar { display: flex; gap: 16px; align-items: center; background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px; flex-wrap: wrap; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f4f6f8; color: #333; }
+    .toolbar { display: flex; gap: 12px; align-items: center; background: #fff; padding: 14px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px; flex-wrap: wrap; }
     .control-group { display: flex; flex-direction: column; gap: 4px; }
-    label { font-size: 12px; font-weight: bold; color: #666; text-transform: uppercase; }
-    input[type="file"] { font-size: 14px; }
-    button { background: #0078d4; color: white; border: none; padding: 10px 18px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer; }
+    label { font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; }
+    button { background: #0078d4; color: white; border: none; padding: 9px 16px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer; }
     button:disabled { background: #ccc; cursor: not-allowed; }
-    #viewer-container { position: relative; display: inline-block; border: 1px solid #ddd; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    button.secondary { background: #2b88d8; }
+    
+    #viewer-container { position: relative; display: inline-block; border: 1px solid #ccc; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
     #pdf-canvas { display: block; }
-    #signature-overlay { position: absolute; top: 40px; left: 40px; border: 2px dashed #0078d4; cursor: move; user-select: none; touch-action: none; }
-    #signature-overlay img { width: 100%; height: 100%; pointer-events: none; display: block; }
+    
+    /* Draggable & Resizable Overlays */
+    .overlay-box { position: absolute; border: 2px dashed #0078d4; cursor: move; user-select: none; box-sizing: border-box; }
+    .sig-box { resize: both; overflow: hidden; min-width: 50px; min-height: 30px; width: 160px; height: 60px; top: 40px; left: 40px; }
+    .sig-box img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block; }
+    
+    .text-box { min-width: 100px; min-height: 30px; padding: 4px 8px; background: rgba(255, 255, 255, 0.85); font-family: Helvetica, Arial, sans-serif; font-size: 16px; color: #000; outline: none; border-color: #2b88d8; cursor: move; top: 120px; left: 40px; }
+    .text-box:focus { border-style: solid; background: #fff; }
   </style>
 </head>
 <body>
@@ -27,128 +34,163 @@
       <input type="file" id="pdf-input" accept="application/pdf">
     </div>
     <div class="control-group">
-      <label>2. Select Signature (PNG)</label>
+      <label>2. Add Signature (PNG)</label>
       <input type="file" id="sig-input" accept="image/png">
     </div>
-    <div class="control-group">
-      <label>Signature Width</label>
-      <input type="range" id="size-slider" min="40" max="400" value="150">
-    </div>
+    <button id="add-text-btn" class="secondary" disabled>+ Add Text Box</button>
     <button id="download-btn" disabled>Download Signed PDF</button>
   </div>
 
   <div id="viewer-container">
     <canvas id="pdf-canvas"></canvas>
-    <div id="signature-overlay" style="display: none; width: 150px;">
-      <img id="sig-img" src="" alt="Signature">
-    </div>
   </div>
 
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-    let pdfArrayBuffer = null;
-    let sigArrayBuffer = null;
-    let pdfDocPdfJs = null;
+    let pdfFile = null;
+    let sigFile = null;
     let currentViewport = null;
 
     const pdfInput = document.getElementById('pdf-input');
     const sigInput = document.getElementById('sig-input');
-    const sigOverlay = document.getElementById('signature-overlay');
-    const sigImg = document.getElementById('sig-img');
+    const addTextBtn = document.getElementById('add-text-btn');
+    const downloadBtn = document.getElementById('download-btn');
+    const container = document.getElementById('viewer-container');
     const canvas = document.getElementById('pdf-canvas');
     const ctx = canvas.getContext('2d');
-    const downloadBtn = document.getElementById('download-btn');
-    const sizeSlider = document.getElementById('size-slider');
 
-    // Load PDF
+    // 1. Load PDF safely without detaching ArrayBuffer
     pdfInput.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      pdfArrayBuffer = await file.arrayBuffer();
-      pdfDocPdfJs = await pdfjsLib.getDocument({ data: pdfArrayBuffer }).promise;
-      
+      pdfFile = e.target.files[0];
+      if (!pdfFile) return;
+
+      const buffer = await pdfFile.arrayBuffer();
+      const pdfDocPdfJs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
       const page = await pdfDocPdfJs.getPage(1);
-      currentViewport = page.getViewport({ scale: 1.5 });
       
+      currentViewport = page.getViewport({ scale: 1.5 });
       canvas.width = currentViewport.width;
       canvas.height = currentViewport.height;
 
       await page.render({ canvasContext: ctx, viewport: currentViewport }).promise;
+      
+      addTextBtn.disabled = false;
       checkReady();
     });
 
-    // Load Signature PNG
-    sigInput.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      sigArrayBuffer = await file.arrayBuffer();
-      sigImg.src = URL.createObjectURL(file);
-      sigOverlay.style.display = 'block';
+    // 2. Load Signature with Corner Resize Handle
+    sigInput.addEventListener('change', (e) => {
+      sigFile = e.target.files[0];
+      if (!sigFile) return;
+
+      let sigBox = document.getElementById('sig-box');
+      if (!sigBox) {
+        sigBox = document.createElement('div');
+        sigBox.id = 'sig-box';
+        sigBox.className = 'overlay-box sig-box';
+        sigBox.innerHTML = `<img id="sig-img" src="" alt="Signature">`;
+        container.appendChild(sigBox);
+        makeDraggableAndResizable(sigBox);
+      }
+
+      document.getElementById('sig-img').src = URL.createObjectURL(sigFile);
       checkReady();
     });
 
-    // Adjust Signature Size
-    sizeSlider.addEventListener('input', (e) => {
-      sigOverlay.style.width = e.target.value + 'px';
+    // 3. Add Draggable & Editable Text Box
+    addTextBtn.addEventListener('click', () => {
+      const textBox = document.createElement('div');
+      textBox.className = 'overlay-box text-box';
+      textBox.contentEditable = true;
+      textBox.innerText = 'Click to edit text';
+      container.appendChild(textBox);
+      makeDraggableAndResizable(textBox);
     });
 
-    // Drag and Drop Placement
-    let isDragging = false;
-    let startX, startY, initialLeft, initialTop;
+    // Unified Drag & Resize Handler
+    let isDragging = false, activeEl = null, startX, startY, initLeft, initTop;
 
-    sigOverlay.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      startX = e.clientX;
-      startY = e.clientY;
-      initialLeft = sigOverlay.offsetLeft;
-      initialTop = sigOverlay.offsetTop;
-    });
+    function makeDraggableAndResizable(el) {
+      el.addEventListener('mousedown', (e) => {
+        const rect = el.getBoundingClientRect();
+        // If clicking bottom-right corner (within 16px), allow native CSS resize
+        if (e.clientX > rect.right - 16 && e.clientY > rect.bottom - 16) return;
 
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      sigOverlay.style.left = `${initialLeft + (e.clientX - startX)}px`;
-      sigOverlay.style.top = `${initialTop + (e.clientY - startY)}px`;
-    });
-
-    document.addEventListener('mouseup', () => isDragging = false);
-
-    function checkReady() {
-      if (pdfArrayBuffer && sigArrayBuffer) downloadBtn.disabled = false;
+        isDragging = true;
+        activeEl = el;
+        startX = e.clientX;
+        startY = e.clientY;
+        initLeft = el.offsetLeft;
+        initTop = el.offsetTop;
+      });
     }
 
-    // Embed Image into PDF & Download
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging || !activeEl) return;
+      activeEl.style.left = `${initLeft + (e.clientX - startX)}px`;
+      activeEl.style.top = `${initTop + (e.clientY - startY)}px`;
+    });
+
+    document.addEventListener('mouseup', () => { isDragging = false; activeEl = null; });
+
+    function checkReady() {
+      if (pdfFile) downloadBtn.disabled = false;
+    }
+
+    // 4. Burn Signature & Text into Final PDF
     downloadBtn.addEventListener('click', async () => {
-      const { PDFDocument } = PDFLib;
-      const pdfDoc = await PDFDocument.load(pdfArrayBuffer);
+      const pdfBytes = await pdfFile.arrayBuffer();
+      const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
       const page = pdfDoc.getPages()[0];
-      const embedSig = await pdfDoc.embedPng(sigArrayBuffer);
 
       const { width: pdfWidth, height: pdfHeight } = page.getSize();
-      
       const scaleX = pdfWidth / currentViewport.width;
       const scaleY = pdfHeight / currentViewport.height;
-
-      const sigRect = sigOverlay.getBoundingClientRect();
       const canvasRect = canvas.getBoundingClientRect();
 
-      const overlayX = sigRect.left - canvasRect.left;
-      const overlayY = sigRect.top - canvasRect.top;
+      // Embed PNG Signature if uploaded
+      const sigBox = document.getElementById('sig-box');
+      if (sigFile && sigBox) {
+        const sigBytes = await sigFile.arrayBuffer();
+        const embedSig = await pdfDoc.embedPng(sigBytes);
+        const sigRect = sigBox.getBoundingClientRect();
 
-      const finalX = overlayX * scaleX;
-      const finalW = sigRect.width * scaleX;
-      const finalH = sigRect.height * scaleY;
-      const finalY = pdfHeight - (overlayY * scaleY) - finalH;
+        const overlayX = (sigRect.left - canvasRect.left) * scaleX;
+        const overlayY = (sigRect.top - canvasRect.top) * scaleY;
+        const finalW = sigRect.width * scaleX;
+        const finalH = sigRect.height * scaleY;
+        const finalY = pdfHeight - overlayY - finalH;
 
-      page.drawImage(embedSig, {
-        x: finalX,
-        y: finalY,
-        width: finalW,
-        height: finalH
-      });
+        page.drawImage(embedSig, { x: overlayX, y: finalY, width: finalW, height: finalH });
+      }
 
-      const pdfBytes = await pdfDoc.save();
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      // Embed Text Boxes
+      const textBoxes = document.querySelectorAll('.text-box');
+      const helveticaFont = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+
+      for (const box of textBoxes) {
+        const text = box.innerText.trim();
+        if (!text) continue;
+
+        const tRect = box.getBoundingClientRect();
+        const overlayX = (tRect.left - canvasRect.left) * scaleX;
+        const overlayY = (tRect.top - canvasRect.top) * scaleY;
+        const finalH = tRect.height * scaleY;
+        const finalY = pdfHeight - overlayY - (finalH * 0.7); // Adjust text baseline
+
+        page.drawText(text, {
+          x: overlayX + (4 * scaleX),
+          y: finalY,
+          size: 14 * scaleX,
+          font: helveticaFont,
+          color: PDFLib.rgb(0, 0, 0)
+        });
+      }
+
+      // Save and Download
+      const outputBytes = await pdfDoc.save();
+      const blob = new Blob([outputBytes], { type: 'application/pdf' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = 'signed_document.pdf';
