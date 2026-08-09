@@ -2,28 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>PDF Editor & Signer</title>
+  <title>PDF Editor & Signer with Zoom</title>
   <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f4f6f8; color: #333; }
-    .toolbar { display: flex; gap: 12px; align-items: center; background: #fff; padding: 14px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px; flex-wrap: wrap; }
+    .toolbar { display: flex; gap: 14px; align-items: center; background: #fff; padding: 14px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 20px; flex-wrap: wrap; }
     .control-group { display: flex; flex-direction: column; gap: 4px; }
     label { font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; }
     button { background: #0078d4; color: white; border: none; padding: 9px 16px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer; }
     button:disabled { background: #ccc; cursor: not-allowed; }
     button.secondary { background: #2b88d8; }
+    .zoom-controls { display: flex; align-items: center; gap: 8px; }
+    .zoom-btn { padding: 6px 12px; background: #eee; color: #333; font-weight: bold; border-radius: 4px; }
+    input[type="color"] { border: 1px solid #ccc; border-radius: 4px; height: 34px; width: 44px; cursor: pointer; background: none; }
     
-    #viewer-container { position: relative; display: inline-block; border: 1px solid #ccc; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    #viewer-container { position: relative; display: inline-block; border: 1px solid #ccc; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.1); touch-action: none; overflow: hidden; }
     #pdf-canvas { display: block; }
     
-    /* Draggable & Resizable Overlays */
-    .overlay-box { position: absolute; border: 2px dashed #0078d4; cursor: move; user-select: none; box-sizing: border-box; }
-    .sig-box { resize: both; overflow: hidden; min-width: 50px; min-height: 30px; width: 160px; height: 60px; top: 40px; left: 40px; }
+    /* Overlays */
+    .overlay-box { position: absolute; border: 1px dashed #0078d4; cursor: move; user-select: none; box-sizing: border-box; }
+    .sig-box { resize: both; overflow: hidden; min-width: 40px; }
     .sig-box img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block; }
     
-    .text-box { min-width: 100px; min-height: 30px; padding: 4px 8px; background: rgba(255, 255, 255, 0.85); font-family: Helvetica, Arial, sans-serif; font-size: 16px; color: #000; outline: none; border-color: #2b88d8; cursor: move; top: 120px; left: 40px; }
-    .text-box:focus { border-style: solid; background: #fff; }
+    .text-box { 
+      min-width: 80px; 
+      min-height: 24px; 
+      padding: 2px 4px; 
+      background: transparent; 
+      font-family: Helvetica, Arial, sans-serif; 
+      font-size: 16px; 
+      color: #000000; 
+      outline: none; 
+      border: 1px dashed transparent;
+    }
+    .text-box:hover, .text-box:focus { border-color: #0078d4; background: rgba(255, 255, 255, 0.2); }
   </style>
 </head>
 <body>
@@ -36,6 +49,18 @@
     <div class="control-group">
       <label>2. Add Signature (PNG)</label>
       <input type="file" id="sig-input" accept="image/png">
+    </div>
+    <div class="control-group">
+      <label>Text Color</label>
+      <input type="color" id="text-color" value="#000000">
+    </div>
+    <div class="control-group">
+      <label>Zoom (Trackpad Pinch Enabled)</label>
+      <div class="zoom-controls">
+        <button id="zoom-out" class="zoom-btn">-</button>
+        <span id="zoom-val">100%</span>
+        <button id="zoom-in" class="zoom-btn">+</button>
+      </div>
     </div>
     <button id="add-text-btn" class="secondary" disabled>+ Add Text Box</button>
     <button id="download-btn" disabled>Download Signed PDF</button>
@@ -50,36 +75,84 @@
 
     let pdfFile = null;
     let sigFile = null;
+    let pdfDocPdfJs = null;
     let currentViewport = null;
+    let zoomScale = 1.2;
 
     const pdfInput = document.getElementById('pdf-input');
     const sigInput = document.getElementById('sig-input');
+    const textColorInput = document.getElementById('text-color');
     const addTextBtn = document.getElementById('add-text-btn');
     const downloadBtn = document.getElementById('download-btn');
     const container = document.getElementById('viewer-container');
     const canvas = document.getElementById('pdf-canvas');
     const ctx = canvas.getContext('2d');
+    const zoomVal = document.getElementById('zoom-val');
 
-    // 1. Load PDF safely without detaching ArrayBuffer
+    // Render Page with dynamic zoom scale
+    async function renderPage() {
+      if (!pdfDocPdfJs) return;
+      
+      const prevScale = currentViewport ? currentViewport.scale : zoomScale;
+      const scaleRatio = zoomScale / prevScale;
+
+      const page = await pdfDocPdfJs.getPage(1);
+      currentViewport = page.getViewport({ scale: zoomScale });
+      
+      canvas.width = currentViewport.width;
+      canvas.height = currentViewport.height;
+
+      await page.render({ canvasContext: ctx, viewport: currentViewport }).promise;
+      zoomVal.innerText = `${Math.round((zoomScale / 1.2) * 100)}%`;
+
+      // Scale and reposition overlays dynamically on zoom
+      document.querySelectorAll('.overlay-box').forEach(el => {
+        el.style.left = `${el.offsetLeft * scaleRatio}px`;
+        el.style.top = `${el.offsetTop * scaleRatio}px`;
+        el.style.width = `${el.offsetWidth * scaleRatio}px`;
+        if (el.classList.contains('sig-box')) {
+          el.style.height = `${el.offsetHeight * scaleRatio}px`;
+        }
+      });
+    }
+
+    // 1. Load PDF
     pdfInput.addEventListener('change', async (e) => {
       pdfFile = e.target.files[0];
       if (!pdfFile) return;
 
       const buffer = await pdfFile.arrayBuffer();
-      const pdfDocPdfJs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
-      const page = await pdfDocPdfJs.getPage(1);
+      pdfDocPdfJs = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
       
-      currentViewport = page.getViewport({ scale: 1.5 });
-      canvas.width = currentViewport.width;
-      canvas.height = currentViewport.height;
-
-      await page.render({ canvasContext: ctx, viewport: currentViewport }).promise;
-      
+      await renderPage();
       addTextBtn.disabled = false;
       checkReady();
     });
 
-    // 2. Load Signature with Corner Resize Handle
+    // 2. Trackpad Pinch-to-Zoom Handler
+    container.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 1.1 : 0.9;
+        const newScale = Math.min(Math.max(0.6, zoomScale * delta), 3.5);
+        if (newScale !== zoomScale) {
+          zoomScale = newScale;
+          renderPage();
+        }
+      }
+    }, { passive: false });
+
+    // Toolbar Zoom Buttons
+    document.getElementById('zoom-in').addEventListener('click', () => {
+      zoomScale = Math.min(3.5, zoomScale * 1.15);
+      renderPage();
+    });
+    document.getElementById('zoom-out').addEventListener('click', () => {
+      zoomScale = Math.max(0.6, zoomScale / 1.15);
+      renderPage();
+    });
+
+    // 3. Load Signature
     sigInput.addEventListener('change', (e) => {
       sigFile = e.target.files[0];
       if (!sigFile) return;
@@ -89,32 +162,60 @@
         sigBox = document.createElement('div');
         sigBox.id = 'sig-box';
         sigBox.className = 'overlay-box sig-box';
+        sigBox.style.top = '40px';
+        sigBox.style.left = '40px';
         sigBox.innerHTML = `<img id="sig-img" src="" alt="Signature">`;
         container.appendChild(sigBox);
-        makeDraggableAndResizable(sigBox);
+        makeDraggable(sigBox);
       }
 
-      document.getElementById('sig-img').src = URL.createObjectURL(sigFile);
+      const imgUrl = URL.createObjectURL(sigFile);
+      const tempImg = new Image();
+      tempImg.onload = () => {
+        const ratio = tempImg.naturalWidth / tempImg.naturalHeight;
+        sigBox.style.width = '180px';
+        sigBox.style.aspectRatio = `${ratio}`;
+        sigBox.style.height = 'auto';
+        document.getElementById('sig-img').src = imgUrl;
+      };
+      tempImg.src = imgUrl;
+
       checkReady();
     });
 
-    // 3. Add Draggable & Editable Text Box
+    // 4. Add Text Box
     addTextBtn.addEventListener('click', () => {
       const textBox = document.createElement('div');
       textBox.className = 'overlay-box text-box';
       textBox.contentEditable = true;
-      textBox.innerText = 'Click to edit text';
+      textBox.innerText = 'Type text here...';
+      textBox.style.top = '120px';
+      textBox.style.left = '40px';
+      textBox.style.color = textColorInput.value;
+      textBox.dataset.color = textColorInput.value;
+      
       container.appendChild(textBox);
-      makeDraggableAndResizable(textBox);
+      makeDraggable(textBox);
+
+      textBox.addEventListener('focus', () => {
+        textColorInput.value = textBox.dataset.color || '#000000';
+      });
     });
 
-    // Unified Drag & Resize Handler
+    textColorInput.addEventListener('input', (e) => {
+      const activeText = document.activeElement;
+      if (activeText && activeText.classList.contains('text-box')) {
+        activeText.style.color = e.target.value;
+        activeText.dataset.color = e.target.value;
+      }
+    });
+
+    // Dragging Logic
     let isDragging = false, activeEl = null, startX, startY, initLeft, initTop;
 
-    function makeDraggableAndResizable(el) {
+    function makeDraggable(el) {
       el.addEventListener('mousedown', (e) => {
         const rect = el.getBoundingClientRect();
-        // If clicking bottom-right corner (within 16px), allow native CSS resize
         if (e.clientX > rect.right - 16 && e.clientY > rect.bottom - 16) return;
 
         isDragging = true;
@@ -138,7 +239,16 @@
       if (pdfFile) downloadBtn.disabled = false;
     }
 
-    // 4. Burn Signature & Text into Final PDF
+    function hexToRgb(hex) {
+      const clean = hex.replace('#', '');
+      return PDFLib.rgb(
+        parseInt(clean.substring(0, 2), 16) / 255,
+        parseInt(clean.substring(2, 4), 16) / 255,
+        parseInt(clean.substring(4, 6), 16) / 255
+      );
+    }
+
+    // 5. Download Signed PDF
     downloadBtn.addEventListener('click', async () => {
       const pdfBytes = await pdfFile.arrayBuffer();
       const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
@@ -149,46 +259,56 @@
       const scaleY = pdfHeight / currentViewport.height;
       const canvasRect = canvas.getBoundingClientRect();
 
-      // Embed PNG Signature if uploaded
+      // Signature Export
       const sigBox = document.getElementById('sig-box');
       if (sigFile && sigBox) {
         const sigBytes = await sigFile.arrayBuffer();
         const embedSig = await pdfDoc.embedPng(sigBytes);
         const sigRect = sigBox.getBoundingClientRect();
 
-        const overlayX = (sigRect.left - canvasRect.left) * scaleX;
-        const overlayY = (sigRect.top - canvasRect.top) * scaleY;
-        const finalW = sigRect.width * scaleX;
-        const finalH = sigRect.height * scaleY;
+        const imgRatio = embedSig.width / embedSig.height;
+        const boxW = sigRect.width * scaleX;
+        const boxH = sigRect.height * scaleY;
+
+        let finalW = boxW;
+        let finalH = boxW / imgRatio;
+
+        if (finalH > boxH) {
+          finalH = boxH;
+          finalW = boxH * imgRatio;
+        }
+
+        const overlayX = (sigRect.left - canvasRect.left) * scaleX + (boxW - finalW) / 2;
+        const overlayY = (sigRect.top - canvasRect.top) * scaleY + (boxH - finalH) / 2;
         const finalY = pdfHeight - overlayY - finalH;
 
         page.drawImage(embedSig, { x: overlayX, y: finalY, width: finalW, height: finalH });
       }
 
-      // Embed Text Boxes
+      // Text Export
       const textBoxes = document.querySelectorAll('.text-box');
       const helveticaFont = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
 
       for (const box of textBoxes) {
         const text = box.innerText.trim();
-        if (!text) continue;
+        if (!text || text === 'Type text here...') continue;
 
         const tRect = box.getBoundingClientRect();
         const overlayX = (tRect.left - canvasRect.left) * scaleX;
         const overlayY = (tRect.top - canvasRect.top) * scaleY;
-        const finalH = tRect.height * scaleY;
-        const finalY = pdfHeight - overlayY - (finalH * 0.7); // Adjust text baseline
+        const fontSize = 14 * scaleX;
+        const finalY = pdfHeight - overlayY - (fontSize * 0.85);
 
         page.drawText(text, {
           x: overlayX + (4 * scaleX),
           y: finalY,
-          size: 14 * scaleX,
+          size: fontSize,
           font: helveticaFont,
-          color: PDFLib.rgb(0, 0, 0)
+          color: hexToRgb(box.dataset.color || '#000000')
         });
       }
 
-      // Save and Download
+      // Output Download
       const outputBytes = await pdfDoc.save();
       const blob = new Blob([outputBytes], { type: 'application/pdf' });
       const link = document.createElement('a');
